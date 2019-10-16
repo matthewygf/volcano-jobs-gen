@@ -81,10 +81,24 @@ func main() {
 	}
 }
 
-func generateTasks(model string, generatedJobName string, worldSize int, machine int) []vkapi.TaskSpec {
+func generateArgs(model string, isCNN bool, worldSize int, machine int) []string {
+	results := []string{}
+
+	return results
+}
+
+func generateTasks(model string, isCNN bool, generatedJobName string, worldSize int, machine int) []vkapi.TaskSpec {
 	// each machine will have its own task spec
 	// because it needs different args
 	results := []vkapi.TaskSpec{}
+	var volumeClaimName string
+	if isCNN {
+		volumeClaimName = "cifar10"
+	} else {
+		volumeClaimName = "language-data"
+	}
+
+	args := generateArgs(model, isCNN, worldSize, machine)
 
 	for i := 0; i < machine; i++ {
 		t := vkapi.TaskSpec{
@@ -97,9 +111,23 @@ func generateTasks(model string, generatedJobName string, worldSize int, machine
 				},
 				Spec: v1.PodSpec{
 					RestartPolicy: v1.RestartPolicyNever,
+					Volumes: []v1.Volume{
+						{
+							Name: "nfs-pvc-datasets",
+							VolumeSource: v1.VolumeSource{
+								PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+									ClaimName: volumeClaimName,
+								},
+							},
+						},
+					},
 					Containers: []v1.Container{
 						{
-							Image: containerImage,
+							Image:   containerImage,
+							Command: []string{"/bin/bash", "-c"},
+							Args:    args,
+							// TODO:
+							Resources: v1.ResourceRequirements{},
 						},
 					},
 				},
@@ -117,10 +145,10 @@ func generateTasks(model string, generatedJobName string, worldSize int, machine
 // 1. { N1: 4 }
 // 2. { N1: 2, N2: 2}
 // 3. { N1: 1, N2: 1, N3: 2}
-func generateJob(name string, worldSize int, machine int) *vkapi.Job {
+func generateJob(name string, isCNN bool, worldSize int, machine int) *vkapi.Job {
 
 	generatedJobName := name + RandStringBytes(2)
-	taskSpecs := generateTasks(name, generatedJobName, worldSize, machine)
+	taskSpecs := generateTasks(name, isCNN, generatedJobName, worldSize, machine)
 	volcanoplugins := map[string][]string{}
 	volcanoplugins["env"] = []string{}
 	volcanoplugins["svc"] = []string{}
