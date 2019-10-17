@@ -69,7 +69,8 @@ var (
 	k8Client *kubernetes.Clientset
 	vkClient *versioned.Clientset
 
-	startFromMachine = 1
+	startFromMachine = 2
+	totalWorldSize   = 6
 )
 
 func initClient() (*rest.Config, error) {
@@ -117,7 +118,7 @@ func main() {
 		// 2. create the volcano job object with gpu requested. and wait for each one to complete.
 		// 3. Record time for each job, distribute level
 		for j := startFromMachine; j < 4; j++ {
-			vkjob := generateJob(cnnModels[i], "cifar10", true, 4, j)
+			vkjob := generateJob(cnnModels[i], "cifar10", true, totalWorldSize, j)
 
 			if vkjob == nil {
 				klog.Errorf("Could not gen job for %v", cnnModels[i])
@@ -138,7 +139,7 @@ func main() {
 			klog.Infof("Starting %d/%d model: %s task %s in CNN", i+1, len(langTasks), langModels[j], langTasks[i])
 
 			for m := startFromMachine; m < 4; m++ {
-				vkjob := generateJob(langModels[j], langTasks[i], false, 4, m)
+				vkjob := generateJob(langModels[j], langTasks[i], false, totalWorldSize, m)
 
 				if vkjob == nil {
 					klog.Errorf("Could not gen job for %v", cnnModels[i])
@@ -280,9 +281,12 @@ func generateTasks(model string, dataset string, isCNN bool, generatedJobName st
 
 	gpuPerTask := int(math.Floor(float64(worldSize) / float64(machine)))
 	remainGPU := worldSize - (gpuPerTask * machine)
+
 	assign := gpuPerTask
 	for i := 0; i < machine; i++ {
+
 		containerArgs := args + " --rank=" + strconv.Itoa(i)
+
 		if i == 0 {
 			taskName = "master"
 		} else {
@@ -290,8 +294,9 @@ func generateTasks(model string, dataset string, isCNN bool, generatedJobName st
 		}
 
 		if i > int(machine-remainGPU)-1 {
-			// if we have remainder, for the last machine, give it more gpu
+			// if we have remainder, distribute the remains equally on machine, give it more gpu
 			assign = gpuPerTask + 1
+			containerArgs += " --assume_same_gpus=false"
 		}
 		hostName := "core-gpu-0" + strconv.Itoa(i+1)
 		resList := v1.ResourceList{
