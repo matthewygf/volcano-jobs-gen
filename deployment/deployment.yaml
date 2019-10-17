@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: volcano-jobs-gen
+  namespace: default
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: volcano-jobs-gen
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["batch.volcano.sh"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "update", "delete","create"]
+  - apiGroups: ["batch.volcano.sh"]
+    resources: ["jobs/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["list", "watch", "create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: volcano-jobs-gen-role
+subjects:
+- kind: ServiceAccount
+  name: volcano-jobs-gen
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: volcano-jobs-gen
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dist-jobs-claim
+  annotations:
+    volume.beta.kubernetes.io/storage-class: "managed-nfs-storage"
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: volcano-jobs-gen
+  name: volcano-jobs-gen
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: volcano-jobs-gen
+  template:
+    metadata:
+      labels:
+        app: volcano-jobs-gen
+    spec:
+      serviceAccount: volcano-jobs-gen
+      volumes:
+        - name: nfs-pvc
+          persistentVolumeClaim:
+            claimName: dist-jobs-claim
+      containers:
+        - name: volcano-jobs-gen
+          image: mattyiscool/volcano-jobs-gen:latest
+          command: ["/bin/bash", "-c"]
+          args: ["sleep infinity"]
+          imagePullPolicy: "Always"
+          volumeMounts:
+            - name: nfs-pvc
+              mountPath: "/mnt/csvs"
