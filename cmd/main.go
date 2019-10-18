@@ -69,8 +69,11 @@ var (
 	k8Client *kubernetes.Clientset
 	vkClient *versioned.Clientset
 
-	startFromMachine = 2
-	totalWorldSize   = 6
+	startFromMachine = flag.Int("start_machine", 2, "generate jobs for the number of machines starting from this.")
+	endFromMachine   = flag.Int("end_machine", 3, "generate jobs for the number of machines ending on this number. must be >= start_machine.")
+	totalWorldSize   = flag.Int("world_size", 6, "total world size , i.e. total number of the processes")
+	runCNNOnly       = flag.Bool("run_cnn_only", false, "only generate and run for cnn")
+	runNLPOnly       = flag.Bool("run_nlp_only", false, "only generate and run for nlp models")
 )
 
 func initClient() (*rest.Config, error) {
@@ -112,34 +115,14 @@ func main() {
 	k8Client = kubernetes.NewForConfigOrDie(config)
 	vkClient = versioned.NewForConfigOrDie(config)
 
-	for i := 0; i < len(cnnModels); i++ {
-		klog.Infof("Starting %d/%d: %s in CNN", i+1, len(cnnModels), cnnModels[i])
-		// 1. create the pvc for the volcano job
-		// 2. create the volcano job object with gpu requested. and wait for each one to complete.
-		// 3. Record time for each job, distribute level
-		for j := startFromMachine; j < 4; j++ {
-			vkjob := generateJob(cnnModels[i], "cifar10", true, totalWorldSize, j)
-
-			if vkjob == nil {
-				klog.Errorf("Could not gen job for %v", cnnModels[i])
-			} else {
-				err := generateAndCreatePVC(vkjob.Name)
-				if err != nil && !apierrors.IsAlreadyExists(err) {
-					klog.Errorf("%v", err)
-					continue
-				}
-
-				submitJob(vkjob)
-			}
-		}
-	}
-
-	for i := 0; i < len(langTasks); i++ {
-		for j := 0; j < len(langModels); j++ {
-			klog.Infof("Starting %d/%d model: %s task %s in CNN", i+1, len(langTasks), langModels[j], langTasks[i])
-
-			for m := startFromMachine; m < 4; m++ {
-				vkjob := generateJob(langModels[j], langTasks[i], false, totalWorldSize, m)
+	if !*runNLPOnly {
+		for i := 0; i < len(cnnModels); i++ {
+			klog.Infof("Starting %d/%d: %s in CNN", i+1, len(cnnModels), cnnModels[i])
+			// 1. create the pvc for the volcano job
+			// 2. create the volcano job object with gpu requested. and wait for each one to complete.
+			// 3. Record time for each job, distribute level
+			for j := *startFromMachine; j <= *endFromMachine; j++ {
+				vkjob := generateJob(cnnModels[i], "cifar10", true, *totalWorldSize, j)
 
 				if vkjob == nil {
 					klog.Errorf("Could not gen job for %v", cnnModels[i])
@@ -149,7 +132,31 @@ func main() {
 						klog.Errorf("%v", err)
 						continue
 					}
+
 					submitJob(vkjob)
+				}
+			}
+		}
+	}
+
+	if !*runCNNOnly {
+		for i := 0; i < len(langTasks); i++ {
+			for j := 0; j < len(langModels); j++ {
+				klog.Infof("Starting %d/%d model: %s task %s in CNN", i+1, len(langTasks), langModels[j], langTasks[i])
+
+				for m := *startFromMachine; m <= *endFromMachine; m++ {
+					vkjob := generateJob(langModels[j], langTasks[i], false, *totalWorldSize, m)
+
+					if vkjob == nil {
+						klog.Errorf("Could not gen job for %v", cnnModels[i])
+					} else {
+						err := generateAndCreatePVC(vkjob.Name)
+						if err != nil && !apierrors.IsAlreadyExists(err) {
+							klog.Errorf("%v", err)
+							continue
+						}
+						submitJob(vkjob)
+					}
 				}
 			}
 		}
@@ -228,7 +235,7 @@ func submitJob(vkjob *vkapi.Job) {
 	}
 }
 
-func generateArgs(model string, dataset string, jobName string, isCNN bool, worldSize int) string {
+func generateArgs(model string, dataset string, taskName string, jobName string, isCNN bool, worldSize int) string {
 	var builder strings.Builder
 
 	builder.WriteString("git clone https://github.com/matthewygf/torch_interference.git && cd torch_interference && python ")
@@ -251,6 +258,7 @@ func generateArgs(model string, dataset string, jobName string, isCNN bool, worl
 			builder.WriteString(" --bidirectional")
 		}
 		builder.WriteString(" --batch_size=16")
+		builder.WriteString(" --task=" + taskName)
 	} else {
 		builder.WriteString(" --batch_size=128")
 	}
@@ -265,7 +273,7 @@ func generateArgs(model string, dataset string, jobName string, isCNN bool, worl
 	return builder.String()
 }
 
-func generateTasks(model string, dataset string, isCNN bool, generatedJobName string, ckptClaimName string, worldSize int, machine int) []vkapi.TaskSpec {
+func generateTasks(model string, dataset string, isCNN bool, modelTaskName string, generatedJobName string, ckptClaimName string, worldSize int, machine int) []vkapi.TaskSpec {
 	// each machine will have its own task spec
 	// because it needs different args
 	results := []vkapi.TaskSpec{}
@@ -277,7 +285,7 @@ func generateTasks(model string, dataset string, isCNN bool, generatedJobName st
 	}
 
 	taskName := ""
-	args := generateArgs(model, dataset, generatedJobName, isCNN, worldSize)
+	args := generateArgs(model, dataset, modelTaskName, generatedJobName, isCNN, worldSize)
 
 	gpuPerTask := int(math.Floor(float64(worldSize) / float64(machine)))
 	remainGPU := worldSize - (gpuPerTask * machine)
@@ -427,14 +435,14 @@ func generateAndCreatePVC(jobName string) error {
 // 1. { N1: 4 }
 // 2. { N1: 2, N2: 2}
 // 3. { N1: 1, N2: 1, N3: 2}
-func generateJob(name string, taskName string, isCNN bool, worldSize int, machine int) *vkapi.Job {
+func generateJob(name string, modelTaskName string, isCNN bool, worldSize int, machine int) *vkapi.Job {
 
 	generatedJobName := name + RandStringBytes(2) + "-machine" + strconv.Itoa(machine)
 	datasetName := ""
 	if isCNN {
 		datasetName = "cifar10"
 	} else {
-		if taskName == "lm" {
+		if modelTaskName == "lm" {
 			datasetName = "wikitext"
 		} else {
 			datasetName = "nc_zhen"
@@ -443,7 +451,7 @@ func generateJob(name string, taskName string, isCNN bool, worldSize int, machin
 
 	ckptClaimName := generatedJobName + "ckpt"
 
-	taskSpecs := generateTasks(name, datasetName, isCNN, generatedJobName, ckptClaimName, worldSize, machine)
+	taskSpecs := generateTasks(name, datasetName, isCNN, modelTaskName, generatedJobName, ckptClaimName, worldSize, machine)
 	volcanoplugins := map[string][]string{}
 	volcanoplugins["env"] = []string{}
 	volcanoplugins["svc"] = []string{}
